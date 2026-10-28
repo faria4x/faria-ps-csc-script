@@ -1,4 +1,5 @@
-## Faria Powershell Custom Setup Config Script - All Version Details [WIP]
+> Work In Progress
+## Faria Powershell Custom Setup Config Script - Version Details
 This text file includes all the details and configurations about each version of the script.
 
 ### All Versions
