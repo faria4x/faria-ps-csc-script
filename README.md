@@ -15,7 +15,7 @@ Simple run powershell custom config script for Windows 10 and 11 that cleans and
 1. Open Powershell as admin. (if you dont, the script will relaunch as admin)
 2. Paste and run the comamnd bellow or you can download the script.
 ```
-irm "https://raw.githubusercontent.com/faria4x/faria-ps-csc-script/refs/heads/main/script/FARIA_PS_CSC_SCRIPT_ESSENTIAL.ps1" | iex
+irm "https://raw.githubusercontent.com/faria4x/faria-ps-csc-script/refs/heads/main/script/FARIA_PS_CSC_SCRIPT.ps1" | iex
 ```
 
 ### Full Script Details
