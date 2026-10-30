@@ -349,6 +349,9 @@ if ($setPowerPlanUltimate) {
             Write-Warning "Failed to activate Ultimate Performance plan. $_"
         }
     }
+	
+	Write-Host "  Disabling Fast Startup..." -ForegroundColor Cyan
+	Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" -Name "HiberbootEnabled" -Value 0 -Type DWord -Force
 
     # Set AC timeouts to never
     if ($ultimateGUID) {
@@ -368,6 +371,14 @@ if ($setPowerPlanUltimate) {
             Write-Warning "Failed to set power plan timeout values. $_"
         }
     }
+	
+	# Disable USB selective suspend (AC + DC)
+	$usbSubGroup         = "2a737441-1930-4402-8d77-b2bebba308a3"
+	$usbSelectiveSuspend = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226"
+	powercfg -setacvalueindex $ultimateGUID $usbSubGroup $usbSelectiveSuspend 0
+	powercfg -setdcvalueindex $ultimateGUID $usbSubGroup $usbSelectiveSuspend 0
+	powercfg -setactive $ultimateGUID
+	Write-Host "  USB selective suspend disabled." -ForegroundColor Cyan
 
 	Write-Host "  Changing power settings for network adapters..." -ForegroundColor Cyan
 
@@ -466,6 +477,11 @@ if ($tweakGeneralExplorerAndOther) {
     foreach ($iconGuid in $desktopIcons.Keys) {
         Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel" -Name $iconGuid -Value $desktopIcons[$iconGuid] -Type DWord
     }
+	
+	# Desktop icon size: 32 = Small, 48 = Medium, 96 = Large
+	$bagPath = "HKCU:\Software\Microsoft\Windows\Shell\Bags\1\Desktop"
+	if (-not (Test-Path $bagPath)) { New-Item -Path $bagPath -Force | Out-Null }
+	Set-ItemProperty -Path $bagPath -Name "IconSize" -Value 32 -Type DWord -Force
 
 	# Restore right-click old context menu
 	New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}" -Force | Out-Null
