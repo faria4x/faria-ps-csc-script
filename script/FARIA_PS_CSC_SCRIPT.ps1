@@ -382,7 +382,7 @@ if ($setPowerPlanUltimate) {
 
 	Write-Host "  Changing power settings for network adapters..." -ForegroundColor Cyan
 
-    $netAdapters = Get-NetAdapter -IncludeHidden -ErrorAction SilentlyContinue
+    $netAdapters = Get-NetAdapter -Physical | Where-Object { $_.PhysicalMediaType -in @('802.3','Native 802.11') }
 
 	# DNS prompt asked before START
     if ($setDns -match '^[Yy]$') { $setDnsYes = $true }
@@ -640,121 +640,33 @@ if ($disableTelemetry) {
 if ($manageServices) {
     Write-Host "Optimizing services..." -ForegroundColor White -BackgroundColor Blue
 
-	$autoServices = @(
-		"Spooler",
-		"WlanSvc",
-		"LanmanServer",
-		"LanmanWorkstation",
-		"EventLog",
-		"AudioSrv",
-		"AudioEndpointBuilder",
-		"ProfSvc",
-		"AppReadiness",
-		"ShellHWDetection",
-		"Themes",
-		"DcomLaunch",
-		"W32Time",
-		"Dhcp",
-		"Dnscache",
-		"NlaSvc",
-		"StateRepository",
-		"UserManager",
-		"SamSs",
-		"LSM",
-		"PlugPlay"
-	)
+	$logDir = "$env:ProgramData\FariaSetup"
+	New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+	Get-Service | Select-Object Name, DisplayName, Status, StartType |
+		Export-Csv "$logDir\services-before.csv" -NoTypeInformation
 
-    $manualServices = @(
-		"SysMain",
-		"TrkWks",
-		"WSearch",
-        "PrintNotify",
-		"WerSvc",
-		"BthAvctpSvc",
-		"bthserv",
-		"BluetoothUserService_*",
-		"PrintWorkflowUserSvc_*",
-		"DeviceAssociationService",
-		"DeviceInstall",
-		"WdiServiceHost",
-		"WdiSystemHost",
-		"WinHttpAutoProxySvc",
-		"FDResPub",
-		"SSDPSRV",
-		"upnphost",
-		"RasMan",
-		"RasAuto",
-		"RemoteRegistry",
-		"TermService",
-		"UsoSvc",
-		"BITS",
-		"DoSvc",
-		"WaaSMedicSvc",
-        "edgeupdate",
-		"edgeupdatem",
-        "Fax",
-        "XblAuthManager",
-		"XblGameSave",
-		"XboxGipSvc",
-		"XboxNetApiSvc"
-	)
+	function Set-SvcStartup {
+		param([string]$Name, [string]$Type)
+		if (-not (Get-Service -Name $Name -ErrorAction SilentlyContinue)) { return }  # not on this build
+		try {
+			Set-Service -Name $Name -StartupType $Type -ErrorAction Stop
+			Write-Host "  $Name -> $Type" -ForegroundColor Cyan
+		} catch {
+			Write-Warning "Could not set $Name to $Type"
+		}
+	}
 
-    $disableServices = @(
-		"DiagTrack",
-		"dmwappushservice",
-		"RetailDemo",
-		"WMPNetworkSvc",
-		"MapsBroker",
-		"PhoneSvc",
-		"WalletService",
-		"MessagingService",
-		"WpcMonSvc",
-		"ParentalControls",
-		"RetailDemo",
-		"SharedAccess"
-	)
+	$autoServices    = @("Spooler","W32Time","WlanSvc","LanmanWorkstation","LanmanServer")
+	$manualServices  = @("SysMain","TrkWks","DoSvc","WerSvc","Fax","XblAuthManager","XblGameSave","XboxGipSvc","XboxNetApiSvc")
+	$disableServices = @("DiagTrack","RemoteRegistry","RetailDemo","MapsBroker","PhoneSvc",
+						 "WalletService","WpcMonSvc","WMPNetworkSvc","SharedAccess")
 
-	foreach ($svc in $autoServices) {
-        try {
-            Set-Service -Name $svc -StartupType Automatic -ErrorAction Stop
-            Write-Host "  Set $svc to Auto Start" -ForegroundColor Cyan
-        } catch {
-            try {
-                sc.exe config $svc start= delayed-auto | Out-Null
-                Write-Host "  Set $svc to Auto Start Delayed (via sc.exe)" -ForegroundColor Cyan
-            } catch {
-                Write-Warning "Could not change $svc ($_)" 
-            }
-        }
-    }
+	foreach ($s in $autoServices)    { Set-SvcStartup $s "Automatic" }
+	foreach ($s in $manualServices)  { Set-SvcStartup $s "Manual" }
+	foreach ($s in $disableServices) { Set-SvcStartup $s "Disabled" }
 
-    foreach ($svc in $manualServices) {
-        try {
-            Set-Service -Name $svc -StartupType Manual -ErrorAction Stop
-            Write-Host "  Set $svc to Manual" -ForegroundColor Cyan
-        } catch {
-            try {
-                sc.exe config $svc start= demand | Out-Null
-                Write-Host "  Set $svc to Manual (via sc.exe)" -ForegroundColor Cyan
-            } catch {
-                Write-Warning "Could not change $svc ($_)" 
-            }
-        }
-    }
-
-    foreach ($svc in $disableServices) {
-        try {
-            Set-Service -Name $svc -StartupType Disabled -ErrorAction Stop
-            Write-Host "  Set $svc to Disabled" -ForegroundColor Cyan
-        } catch {
-            try {
-                sc.exe config $svc start= disabled | Out-Null
-                Write-Host "  Set $svc to Disabled (via sc.exe)" -ForegroundColor Cyan
-            } catch {
-                Write-Warning "Could not change $svc ($_)" 
-            }
-        }
-    }
+	Get-Service | Select-Object Name, DisplayName, Status, StartType |
+		Export-Csv "$logDir\services-after.csv" -NoTypeInformation
 	
 	Write-Host "  All services optimized and set." -ForegroundColor Cyan
 }
@@ -824,64 +736,68 @@ if ($forceDisableBitlocker) {
 if ($installapps) {
     Write-Host "Installing new apps..." -ForegroundColor White -BackgroundColor Blue
 
-    # List of apps to install
-    $apps = @(
-		"Microsoft.VCRedist.2005.x86",
-		"Microsoft.VCRedist.2005.x64",
-		"Microsoft.VCRedist.2008.x86",
-		"Microsoft.VCRedist.2008.x64",
-		"Microsoft.VCRedist.2010.x86",
-		"Microsoft.VCRedist.2010.x64",
-		"Microsoft.VCRedist.2012.x86",
-		"Microsoft.VCRedist.2012.x64",
-		"Microsoft.VCRedist.2013.x86",
-		"Microsoft.VCRedist.2013.x64",
-		"Microsoft.VCRedist.2015+.x86",
-		"Microsoft.VCRedist.2015+.x64",
-		"Microsoft.DotNet.DesktopRuntime.3_1",
-		"Microsoft.DotNet.DesktopRuntime.5",
-		"Microsoft.DotNet.DesktopRuntime.6",
-		"Microsoft.DotNet.DesktopRuntime.7",
-		"Microsoft.DotNet.DesktopRuntime.8",
-		"Microsoft.DotNet.DesktopRuntime.9",
-		"Microsoft.DotNet.Runtime.3_1",
-		"Microsoft.DotNet.Runtime.5",
-		"Microsoft.DotNet.Runtime.6",
-		"Microsoft.DotNet.Runtime.7",
-		"Microsoft.DotNet.Runtime.8",
-		"Microsoft.DotNet.Runtime.9",
-		"Microsoft.DotNet.AspNetCore.3_1",
-		"Microsoft.DotNet.AspNetCore.5",
-		"Microsoft.DotNet.AspNetCore.6",
-		"Microsoft.DotNet.AspNetCore.7",
-		"Microsoft.DotNet.AspNetCore.8",
-		"Microsoft.DotNet.AspNetCore.9",
-		"Microsoft.DirectX",
-		"Microsoft.PowerShell",
-		"Oracle.JavaRuntimeEnvironment",
-        "7zip.7zip",
-        "Notepad++.Notepad++",
-        "VideoLAN.VLC"
-    )
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Warning "winget not found (normal in audit mode / before App Installer is available). Skipping app installs."
+    }
+    else {
+        $apps = @(
+            "Microsoft.VCRedist.2005.x86",
+			"Microsoft.VCRedist.2005.x64",
+			"Microsoft.VCRedist.2008.x86",
+			"Microsoft.VCRedist.2008.x64",
+			"Microsoft.VCRedist.2010.x86",
+			"Microsoft.VCRedist.2010.x64",
+			"Microsoft.VCRedist.2012.x86",
+			"Microsoft.VCRedist.2012.x64",
+			"Microsoft.VCRedist.2013.x86",
+			"Microsoft.VCRedist.2013.x64",
+			"Microsoft.VCRedist.2015+.x86",
+			"Microsoft.VCRedist.2015+.x64",
+			"Microsoft.DotNet.DesktopRuntime.3_1",
+			"Microsoft.DotNet.DesktopRuntime.5",
+			"Microsoft.DotNet.DesktopRuntime.6",
+			"Microsoft.DotNet.DesktopRuntime.7",
+			"Microsoft.DotNet.DesktopRuntime.8",
+			"Microsoft.DotNet.DesktopRuntime.9",
+			"Microsoft.DotNet.Runtime.3_1",
+			"Microsoft.DotNet.Runtime.5",
+			"Microsoft.DotNet.Runtime.6",
+			"Microsoft.DotNet.Runtime.7",
+			"Microsoft.DotNet.Runtime.8",
+			"Microsoft.DotNet.Runtime.9",
+			"Microsoft.DotNet.AspNetCore.3_1",
+			"Microsoft.DotNet.AspNetCore.5",
+			"Microsoft.DotNet.AspNetCore.6",
+			"Microsoft.DotNet.AspNetCore.7",
+			"Microsoft.DotNet.AspNetCore.8",
+			"Microsoft.DotNet.AspNetCore.9",
+			"Microsoft.DirectX",
+			"Microsoft.PowerShell",
+			"Oracle.JavaRuntimeEnvironment",
+			"7zip.7zip",
+			"Notepad++.Notepad++",
+			"VideoLAN.VLC"
+        )
 
-    foreach ($app in $apps) {
-        $isInstalled = winget list --id $app --accept-source-agreements --accept-package-agreements 2>$null | Select-String $app
+        foreach ($app in $apps) {
+            # winget returns a non-zero exit code when the package isn't installed
+            winget list --id $app -e --accept-source-agreements 2>$null | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  $app already installed. Skipping..." -ForegroundColor Cyan
+                continue
+            }
 
-        if ($isInstalled) {
-            Write-Host "  $app already installed. Skipping..." -ForegroundColor Cyan
-            continue
-        }
+            Write-Host "  Installing $app..." -ForegroundColor Cyan
+            winget install --id $app -e --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --no-upgrade | Out-Null
 
-        Write-Host "  Installing $app..." -ForegroundColor Cyan
-        try {
-            winget install --id $app --silent --accept-source-agreements --accept-package-agreements -e --disable-interactivity --no-upgrade | Out-Null
-            Write-Host "  $app installed successfully!" -ForegroundColor Cyan
-        } catch {
-            Write-Warning ("Failed to install " + $app + ": " + $_)
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "  $app installed successfully!" -ForegroundColor Cyan
+            } else {
+                Write-Warning "Failed to install $app (exit code $LASTEXITCODE)"
+            }
         }
     }
 }
-
 
 # ========================
 #  END
