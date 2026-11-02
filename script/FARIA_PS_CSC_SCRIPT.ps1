@@ -2,17 +2,6 @@
     Faria Powershell Custom Setup Config Script Win 10/11
 	Essential Version
     Created by FARIA (github.com/faria4x)
-
-		    @@@@@@@@@@@@@@@@@@@@@@@@@@
-		   @@@@@@@@@@@@@@@@@@@@@@@@@@
-	      @@@@@  @@@@@@@@@@@@@@@@@@@
-	     @@@@@@@  @@@@@@@@@@@@@@@@@
-	    @@@@@@@@@  @@@@@@@@@@@@@@@
-	   @@@@@@@@  @@@@@@@@@@@@@@@@
-	  @@@@@@@  @@@@@       @@@@@
-	 @@@@@@@@@@@@@@@@@@@@@@@@@@
-	@@@@@@@@@@@@@@@@@@@@@@@@@@
-
 #>
 
 # Relaunch as Admin if not already
@@ -41,6 +30,14 @@ if (-not $IsAdmin) {
 }
 
 # ========================
+#  LOGGING
+# ========================
+# Everything the script prints is saved here, so you can see what ran on each PC.
+$logDir = "$env:TEMP\F_PS_CSC_S"
+New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+try { Start-Transcript -Path "$logDir\setup-$(Get-Date -Format 'yyyyMMdd-HHmmss').log" -Append | Out-Null } catch { }
+
+# ========================
 #  CONFIGURATION TWEAKS
 # ========================
 $removeApps						= $true
@@ -50,6 +47,72 @@ $disableTelemetry				= $true
 $manageServices  				= $true
 $forceDisableBitlocker			= $true
 $installapps					= $false
+
+# ========================
+#  HELPER FUNCTIONS
+# ========================
+
+# Write a registry value, creating the key if it does not exist yet.
+# (Set-ItemProperty alone fails on missing keys, which is common in the Default user hive.)
+function Set-Reg {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name,
+        [AllowEmptyString()]$Value,
+        [ValidateSet("DWord","String","Binary","ExpandString","QWord")][string]$Type = "DWord"
+    )
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { New-Item -Path $Path -Force -ErrorAction Stop | Out-Null }
+        Set-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -Type $Type -Force -ErrorAction Stop
+    } catch {
+        Write-Warning "Registry write failed: $Path\$Name ($($_.Exception.Message))"
+    }
+}
+
+# Runs a scriptblock twice:
+#   1) against the CURRENT user (HKCU)  - in audit mode this is the built-in Administrator
+#   2) against the DEFAULT user profile  - every account created afterwards inherits these settings
+# The scriptblock receives the registry root as its first parameter ($root).
+function Invoke-ForUserHives {
+    param([Parameter(Mandatory)][scriptblock]$Action)
+
+    # 1) Current user
+    & $Action "HKCU:"
+
+    # 2) Default profile
+    $ntuser   = "$env:SystemDrive\Users\Default\NTUSER.DAT"
+    $hiveName = "DefaultUser"
+    $hiveKey  = "HKU\$hiveName"
+    $hivePath = "Registry::HKEY_USERS\$hiveName"
+
+    if (-not (Test-Path -LiteralPath $ntuser)) {
+        Write-Warning "Default user hive not found ($ntuser). New users will NOT get these settings."
+        return
+    }
+
+    # Leftover from an interrupted earlier run
+    if (Test-Path -LiteralPath $hivePath) { reg unload $hiveKey 2>&1 | Out-Null }
+
+    reg load $hiveKey $ntuser 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "Could not load the Default user hive. New users will NOT get these settings."
+        return
+    }
+
+    try {
+        & $Action $hivePath
+    }
+    finally {
+        # Unload fails while a handle is still open, so collect garbage and retry
+        $unloaded = $false
+        for ($i = 0; $i -lt 10 -and -not $unloaded; $i++) {
+            [gc]::Collect(); [gc]::WaitForPendingFinalizers()
+            reg unload $hiveKey 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $unloaded = $true } else { Start-Sleep -Seconds 1 }
+        }
+        if (-not $unloaded) { Write-Warning "Could not unload the Default user hive. Reboot before running sysprep." }
+    }
+}
 
 # Detect Windows build information
 $osInfo = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
@@ -91,13 +154,9 @@ $setDns = Read-Host "Set Quad9 (9.9.9.9) and Cloudflare (1.1.1.1) DNS Servers? [
 $winBuildDesktop = Read-Host "Show Windows build at the bottom right of the desktop? [Y/N]: "
 # Enable Verbose Status (additional log information when shutting down/restarting Windows) prompt
 $verboseS = Read-Host "Enable Verbose Status? (additional log information when shutting down/restarting Windows) [Y/N]: "
-# ?? ASK USER INSTALL APPS prompt
+# ASK USER INSTALL APPS prompt
 $installapps = Read-Host "Do you wish to install extra essential apps? (7zip, Java, VLC Media Player, Microsoft Distributions/Redistributables, Powershell 7) [Y/N]: "
-if ($installapps -match '^[Yy]$') {
-	$installapps = $true
-} else { 
-	$installapps = $false
-}
+if ($installapps -match '^[Yy]$') { $installapps = $true } else { $installapps = $false }
 
 # ========================
 #  START
@@ -220,11 +279,11 @@ if ($removeApps) {
 			if ($cmdLine -match 'msiexec') {
 				Start-Process -FilePath "cmd.exe" -ArgumentList "/c $cmdLine" -Wait -NoNewWindow
 			} else {
-				$exe  = $cmdLine
-				$args = ""
-				if ($cmdLine -match '^\s*\"([^"]+)\"\s*(.*)$') { $exe=$matches[1]; $args=$matches[2] }
-				elseif ($cmdLine -match '^\s*(\S+)\s+(.*)$')    { $exe=$matches[1]; $args=$matches[2] }
-				Start-Process -FilePath $exe -ArgumentList $args -Wait -NoNewWindow
+				$exe      = $cmdLine
+				$procArgs = ""
+				if ($cmdLine -match '^\s*\"([^"]+)\"\s*(.*)$') { $exe=$matches[1]; $procArgs=$matches[2] }
+				elseif ($cmdLine -match '^\s*(\S+)\s+(.*)$')    { $exe=$matches[1]; $procArgs=$matches[2] }
+				Start-Process -FilePath $exe -ArgumentList $procArgs -Wait -NoNewWindow
 			}
 			return
 		}
@@ -249,20 +308,50 @@ if ($removeApps) {
             "$env:ProgramData\Microsoft OneDrive"
         )
         foreach ($folder in $folders) {
-            if (Test-Path $folder) {
-                Remove-Item $folder -Recurse -Force -ErrorAction SilentlyContinue
+            if (-not (Test-Path $folder)) { continue }
+
+            # Safety net: never delete a user's OneDrive folder if it contains files
+            if ($folder -eq "$env:UserProfile\OneDrive") {
+                if (Get-ChildItem $folder -Recurse -File -Force -ErrorAction SilentlyContinue | Select-Object -First 1) {
+                    Write-Warning "  $folder contains files - not deleting it."
+                    continue
+                }
             }
+            Remove-Item $folder -Recurse -Force -ErrorAction SilentlyContinue
         }
 
-        Set-ItemProperty -Path "HKCR:\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" -Name "System.IsPinnedToNameSpaceTree" -Value 0 -Type DWord -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path "HKCR:\Wow6432Node\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" -Name "System.IsPinnedToNameSpaceTree" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+        # Hide the OneDrive entry in the Explorer navigation pane (HKLM\SOFTWARE\Classes = what HKCR shows)
+        Set-Reg "HKLM:\SOFTWARE\Classes\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" "System.IsPinnedToNameSpaceTree" 0
+        Set-Reg "HKLM:\SOFTWARE\Classes\Wow6432Node\CLSID\{018D5C66-4533-4307-9B53-224DE2ED1FE6}" "System.IsPinnedToNameSpaceTree" 0
+
         Get-ScheduledTask -TaskPath "\Microsoft\OneDrive\" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
         Get-ScheduledTask -TaskPath "\Microsoft\Windows\OneDrive\" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
+        # The real OneDrive update tasks live in the root task folder
+        Get-ScheduledTask -TaskName "OneDrive*" -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue
 
         Write-Host "  OneDrive uninstalled." -ForegroundColor Cyan
     }
     else {
         Write-Host "  OneDrive is not installed. Skipping..." -ForegroundColor Cyan
+    }
+
+    # --- OneDrive PREVENTION ---
+    # Uninstalling is not enough: Windows still runs OneDriveSetup from the Default profile for every NEW user,
+    # which reinstalls it and starts moving Desktop/Documents/Pictures into the cloud.
+    Write-Host "  Blocking OneDrive from returning / moving user folders..." -ForegroundColor Cyan
+
+    # Machine-wide policies.
+    # NOTE: DisableFileSyncNGSC also stops OneDrive for Business / Microsoft 365 sync.
+    #       Delete that line if a customer wants OneDrive later (KFMBlockOptIn alone only blocks folder moving).
+    # Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive" "DisableFileSyncNGSC" 1
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\OneDrive" "KFMBlockOptIn" 1
+
+    # Remove the auto-run entries from the current user and from the Default profile
+    Invoke-ForUserHives {
+        param($root)
+        $runKey = "$root\Software\Microsoft\Windows\CurrentVersion\Run"
+        Remove-ItemProperty -Path $runKey -Name "OneDriveSetup" -ErrorAction SilentlyContinue
+        Remove-ItemProperty -Path $runKey -Name "OneDrive"      -ErrorAction SilentlyContinue
     }
 }
 
@@ -273,7 +362,7 @@ if ($setPowerPlanUltimate) {
     Write-Host "Setting power management options..." -ForegroundColor White -BackgroundColor Blue
 	Write-Host "  Setting Ultimate Performance power plan..." -ForegroundColor Cyan
 
-    $regPath      = "HKCU:\Software\F_PS_CSC_S"
+    $planRegPath  = "HKLM:\SOFTWARE\F_PS_CSC_S"
     $regName      = "UltimatePlanGUID"
     $templateGUID = "e9a42b02-d5df-448d-aa00-03f14749eb61"  # Microsoft Ultimate Power Plan Template
     $ultimateGUID = $null
@@ -304,8 +393,8 @@ if ($setPowerPlanUltimate) {
     }
 
     $saved = $null
-    if (Test-Path $regPath) {
-        $saved = (Get-ItemProperty -Path $regPath -Name $regName -ErrorAction SilentlyContinue).$regName
+    if (Test-Path $planRegPath) {
+        $saved = (Get-ItemProperty -Path $planRegPath -Name $regName -ErrorAction SilentlyContinue).$regName
         if ($saved) { $saved = $saved.ToLower() }
     }
 
@@ -334,8 +423,7 @@ if ($setPowerPlanUltimate) {
         }
 
         if ($ultimateGUID) {
-            if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
-            Set-ItemProperty -Path $regPath -Name $regName -Value $ultimateGUID
+            Set-Reg $planRegPath $regName $ultimateGUID "String"
             Write-Host "  Saved Ultimate plan GUID to registry." -ForegroundColor Cyan
         }
     }
@@ -349,43 +437,61 @@ if ($setPowerPlanUltimate) {
             Write-Warning "Failed to activate Ultimate Performance plan. $_"
         }
     }
-	
-	Write-Host "  Disabling Fast Startup..." -ForegroundColor Cyan
-	Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" -Name "HiberbootEnabled" -Value 0 -Type DWord -Force
 
-    # Set AC timeouts to never
-    if ($ultimateGUID) {
+    # Plan that the settings below are applied to.
+    # Some laptops only offer Balanced (no Ultimate Performance), so fall back to whatever plan is active.
+    $targetGUID = $ultimateGUID
+    if (-not $targetGUID) {
+        $activeOut = powercfg -getactivescheme 2>$null | Out-String
+        if ($activeOut -match '([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})') {
+            $targetGUID = $matches[1].ToLower()
+            Write-Warning "Ultimate Performance is not available on this machine. Applying settings to the active plan instead ($targetGUID)."
+        }
+    }
+
+	Write-Host "  Disabling Fast Startup..." -ForegroundColor Cyan
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" "HiberbootEnabled" 0
+
+    # Set timeouts to never
+    if ($targetGUID) {
         try {
             powercfg -change -monitor-timeout-ac 0
             powercfg -change -disk-timeout-ac 0
             powercfg -change -standby-timeout-ac 0
-            powercfg -setacvalueindex $ultimateGUID SUB_VIDEO VIDEOIDLE 0
+            powercfg -setacvalueindex $targetGUID SUB_VIDEO VIDEOIDLE 0
 
             powercfg -change -monitor-timeout-dc 0
             powercfg -change -disk-timeout-dc 0
             powercfg -change -standby-timeout-dc 0
-            powercfg -setdcvalueindex $ultimateGUID SUB_VIDEO VIDEOIDLE 0
+            powercfg -setdcvalueindex $targetGUID SUB_VIDEO VIDEOIDLE 0
 
-			Write-Host "  Timeouts (AC) and (DC) set to never for Ultimate plan." -ForegroundColor Cyan
+			Write-Host "  Timeouts (AC) and (DC) set to never." -ForegroundColor Cyan
         } catch {
             Write-Warning "Failed to set power plan timeout values. $_"
         }
+
+        # Disable USB selective suspend (AC + DC)
+        $usbSubGroup         = "2a737441-1930-4402-8d77-b2bebba308a3"
+        $usbSelectiveSuspend = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226"
+        powercfg -setacvalueindex $targetGUID $usbSubGroup $usbSelectiveSuspend 0
+        powercfg -setdcvalueindex $targetGUID $usbSubGroup $usbSelectiveSuspend 0
+        powercfg -setactive $targetGUID
+        Write-Host "  USB selective suspend disabled." -ForegroundColor Cyan
     }
-	
-	# Disable USB selective suspend (AC + DC)
-	$usbSubGroup         = "2a737441-1930-4402-8d77-b2bebba308a3"
-	$usbSelectiveSuspend = "48e6b7a6-50f5-4782-a5d4-53bb8f07e226"
-	powercfg -setacvalueindex $ultimateGUID $usbSubGroup $usbSelectiveSuspend 0
-	powercfg -setdcvalueindex $ultimateGUID $usbSubGroup $usbSelectiveSuspend 0
-	powercfg -setactive $ultimateGUID
-	Write-Host "  USB selective suspend disabled." -ForegroundColor Cyan
+    else {
+        Write-Warning "No power plan found - timeouts and USB selective suspend were NOT changed."
+    }
 
-	Write-Host "  Changing power settings for network adapters..." -ForegroundColor Cyan
+	Write-Host "  Changing power settings for network adapters (Ethernet + Wi-Fi only)..." -ForegroundColor Cyan
 
-    $netAdapters = Get-NetAdapter -Physical | Where-Object { $_.PhysicalMediaType -in @('802.3','Native 802.11') }
+    # Physical Ethernet (802.3) and Wi-Fi (Native 802.11) only - no hidden/virtual/VPN adapters
+    $netAdapters = Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { $_.PhysicalMediaType -in @('802.3','Native 802.11') }
 
 	# DNS prompt asked before START
     if ($setDns -match '^[Yy]$') { $setDnsYes = $true }
+
+    $nicClassPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
+    $nicKeys      = Get-ChildItem $nicClassPath -ErrorAction SilentlyContinue
 
     foreach ($adapter in $netAdapters) {
         Write-Host "  Processing: $($adapter.Name)" -ForegroundColor Cyan
@@ -393,41 +499,30 @@ if ($setPowerPlanUltimate) {
         try {
             $ifIndex = $adapter.InterfaceIndex
 
-            # === Your existing power management settings ===
-            $regPath = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
-            $subKeys = Get-ChildItem $regPath -ErrorAction SilentlyContinue
-
-            foreach ($key in $subKeys) {
+            # === Power management settings ===
+            foreach ($key in $nicKeys) {
                 if ((Get-ItemProperty -Path $key.PSPath -ErrorAction SilentlyContinue).DriverDesc -eq $adapter.InterfaceDescription) {
-                    Set-ItemProperty -Path $key.PSPath -Name "PnPCapabilities" -Value 24 -Type DWord -Force
-                    if (Get-ItemProperty -Path $key.PSPath -Name "WakeOnMagicPacket" -ErrorAction SilentlyContinue) {
-                        Set-ItemProperty -Path $key.PSPath -Name "WakeOnMagicPacket" -Value 0 -Type DWord -Force
+                    # 24 = "Allow the computer to turn off this device to save power" unchecked
+                    Set-Reg $key.PSPath "PnPCapabilities" 24
+                    foreach ($wolName in @("*WakeOnMagicPacket", "WakeOnMagicPacket")) {
+                        if (Get-ItemProperty -Path $key.PSPath -Name $wolName -ErrorAction SilentlyContinue) {
+                            Set-ItemProperty -Path $key.PSPath -Name $wolName -Value 0 -Force -ErrorAction SilentlyContinue
+                        }
                     }
-                    Start-Process -FilePath "powercfg.exe" -ArgumentList "/devicedisablewake", "$($adapter.Name)" -WindowStyle Hidden -NoNewWindow -Wait
                 }
             }
+            # powercfg wants the device description, not the connection name
+            powercfg /devicedisablewake "$($adapter.InterfaceDescription)" 2>&1 | Out-Null
 
-            # === DISABLE NETBIOS OVER TCP/IP (Best current method) ===
-            # Method 1: Modern cmdlet
-            try {
-                Set-NetTCPIPConfiguration -InterfaceIndex $ifIndex -NetbiosOptions 2 -ErrorAction Stop
-                Write-Host "    NetBIOS disabled (Set-NetTCPIPConfiguration) for $($adapter.Name)" -ForegroundColor DarkGray
-            }
-            catch {
-                # Method 2: Direct registry (very reliable)
-                $nbtPath = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\tcpip$ifIndex"
-                if (-not (Test-Path $nbtPath)) { New-Item -Path $nbtPath -Force | Out-Null }
-                Set-ItemProperty -Path $nbtPath -Name "NetbiosOptions" -Value 2 -Type DWord -Force
-                Write-Host "    NetBIOS disabled via registry for $($adapter.Name)" -ForegroundColor DarkGray
-            }
-
-            # === Disable LMHOSTS lookup (global) ===
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" -Name "EnableLMHOSTS" -Value 0 -Type DWord -Force
+            # === DISABLE NETBIOS OVER TCP/IP (per adapter, 2 = disabled) ===
+            $nbtPath = "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters\Interfaces\Tcpip_$($adapter.InterfaceGuid)"
+            Set-Reg $nbtPath "NetbiosOptions" 2
+            Write-Host "    NetBIOS disabled for $($adapter.Name)" -ForegroundColor DarkGray
 
             # === DNS Settings ===
             if ($setDnsYes) {
                 try {
-                    Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @("9.9.9.9", "1.1.1.1")
+                    Set-DnsClientServerAddress -InterfaceIndex $ifIndex -ServerAddresses @("9.9.9.9", "1.1.1.1") -ErrorAction Stop
                     Write-Host "    DNS set successfully" -ForegroundColor DarkGray
                 } catch {
                     Write-Host "    Failed to set DNS for $($adapter.Name)" -ForegroundColor Yellow
@@ -439,6 +534,9 @@ if ($setPowerPlanUltimate) {
         }
     }
 
+    # === Disable LMHOSTS lookup (global, once) ===
+    Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" "EnableLMHOSTS" 0
+
     Write-Host "  Network configuration completed (NetBIOS + LMHOSTS disabled)." -ForegroundColor Green
 }
 
@@ -448,12 +546,7 @@ if ($setPowerPlanUltimate) {
 if ($tweakGeneralExplorerAndOther) {
     Write-Host "Configuring File Explorer, Desktop, Taskbar and other misc stuff..." -ForegroundColor White -BackgroundColor Blue
 
-    # Basic Explorer tweaks
-	Write-Host "  Configuring file explorer settings..." -ForegroundColor Cyan
-    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name HideFileExt -Value 0
-    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name Hidden -Value 1
-    Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name LaunchTo -Value 1
-	Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name NavPaneShowLibraries -Value 1 -Type DWord
+	# ---- Machine-wide / current-user-only items ----
 
 	# Check "Allow files on this drive to have contents indexed in addition to file properties" option in the properties of the Windows local drive
 	$drive = Get-WmiObject -Class Win32_Volume -Filter "DriveLetter = 'C:'"
@@ -464,47 +557,12 @@ if ($tweakGeneralExplorerAndOther) {
 		Write-Warning "Could not find C: drive object"
 	}
 
-    # Classic desktop icons
-	Write-Host "  Configuring desktop settings..." -ForegroundColor Cyan
-    $desktopIcons = @{
-		"{59031a47-3f72-44a7-89c5-5595fe6b30ee}" = 0  # User's Files Folder
-        "{20D04FE0-3AEA-1069-A2D8-08002B30309D}" = 0  # This PC/Computer
-        "{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" = 0  # Network
-		"{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}" = 0  # Control Panel
-        "{645FF040-5081-101B-9F08-00AA002F954E}" = 0  # Recycle Bin
-    }
+	# Restore right-click old context menu (Windows 11).
+	# HKLM\SOFTWARE\Classes applies to every user; HKCU covers the account running the script.
+	Set-Reg "HKLM:\SOFTWARE\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" "(default)" "" "String"
+	Set-Reg "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" "(default)" "" "String"
 
-    foreach ($iconGuid in $desktopIcons.Keys) {
-        Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\HideDesktopIcons\NewStartPanel" -Name $iconGuid -Value $desktopIcons[$iconGuid] -Type DWord
-    }
-	
-	# Desktop icon size: 32 = Small, 48 = Medium, 96 = Large
-	$bagPath = "HKCU:\Software\Microsoft\Windows\Shell\Bags\1\Desktop"
-	if (-not (Test-Path $bagPath)) { New-Item -Path $bagPath -Force | Out-Null }
-	Set-ItemProperty -Path $bagPath -Name "IconSize" -Value 32 -Type DWord -Force
-
-	# Restore right-click old context menu
-	New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}" -Force | Out-Null
-	New-Item -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Force | Out-Null
-	Set-ItemProperty -Path "HKCU:\Software\Classes\CLSID\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\InprocServer32" -Name "(default)" -Value "" -Force
-
-	# Show Windows build at the bottom right of the desktop prompt before START
-	if ($winBuildDesktop -match '^[Yy]$') {
-		Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "PaintDesktopVersion" -Type DWord -Value 1 -Force
-	} else { <# Nothing #> }
-
-	# Disable Spotlight
-	$cdmPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
-	if (-not (Test-Path $cdmPath)) { New-Item -Path $cdmPath -Force | Out-Null }
-	Set-ItemProperty -Path $cdmPath -Name "SubscribedContent-338388Enabled" -Type DWord -Value 0 -Force  # Desktop Spotlight off
-	Set-ItemProperty -Path $cdmPath -Name "SubscribedContent-338387Enabled" -Type DWord -Value 0 -Force  # Lock bleed-over off
-	Set-ItemProperty -Path $cdmPath -Name "RotatingLockScreenEnabled"     -Type DWord -Value 0 -Force
-	
-	$spotlightSettingsPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\DesktopSpotlight\Settings"
-	if (-not (Test-Path $spotlightSettingsPath)) { New-Item -Path $spotlightSettingsPath -Force | Out-Null }
-	Set-ItemProperty -Path $spotlightSettingsPath -Name "EnabledState" -Type DWord -Value 0 -Force
-	
-	# Clear Spotlight cache (prevents old images/state from reloading)
+	# Clear Spotlight cache (prevents old images/state from reloading) - current user's profile only
 	$cachePaths = @(
 		"$env:LocalAppData\Packages\Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy\LocalState\Assets",
 		"$env:LocalAppData\Packages\Microsoft.Windows.ContentDeliveryManager_cw5n1h2txyewy\LocalState\RoamingState",
@@ -516,92 +574,117 @@ if ($tweakGeneralExplorerAndOther) {
 		}
 	}
 
-	$themeReg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"
-	# Determine dark mode (1 = light mode, 0 = dark mode)
-    $isLightMode = (Get-ItemProperty -Path $themeReg -Name "AppsUseLightTheme" -ErrorAction SilentlyContinue).AppsUseLightTheme
-
-	# Set wallpaper path depending of which Windows version
-	if ($osInfo.CurrentBuildNumber -ge 22000) {
-		# Windows 11 default
-		if ($isLightMode -eq 1) {
-            $wallpaperPath = "C:\Windows\Web\Wallpaper\Windows\img0.jpg"
-        } else {
-            $wallpaperPath = "C:\Windows\Web\Wallpaper\Windows\img19.jpg"
-        }
-	} else {
-		# Windows 10 default
-		$wallpaperPath = "C:\Windows\Web\4K\Wallpaper\Windows\img0_3840x2160.jpg"
-	}
-	
-	$wallpaperModePath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Wallpapers"
-	if (-not (Test-Path $wallpaperModePath)) { New-Item -Path $wallpaperModePath -Force | Out-Null }
-
-	# DEFAULT WINDOWS WALLPAPER
-	# Wallpaper Mode set to Image
-	Set-ItemProperty -Path $wallpaperModePath -Name "BackgroundType" -Type DWord -Value 0 -Force
-	# Set wallpaper
-	Set-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "WallPaper" -Value $wallpaperPath -Force
-
-	Write-Host "  Configuring taskbar settings..." -ForegroundColor Cyan
-
-	# Taskbar search display set to icon (Windows 10)
-	Set-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" -Name "SearchboxTaskbarMode" -Value 1 -Type DWord
-
-	# Taskbar search display set to icon (Windows 11)
-	Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarSearchMode" -Value 1 -Type DWord
-	
-	# Enable "End task" in app right-click menu taskbar (Only on Windows 11)
-	New-Item -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" -Force | Out-Null
-	Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced\TaskbarDeveloperSettings" -Name TaskbarEndTask -Type DWord -Value 1
-
-	# Taskbar start button, pinned and opened Apps, search filed bar set alignment to the left (Only on Windows 11)
-	Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced" -Name "TaskbarAl" -Value 0
-
-	# Set Performance options preset to "Best Performance" to "Custom"
-	Write-Host "  Applying custom set performance options..." -ForegroundColor Cyan
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name VisualFXSetting -Type DWord -Value 2
-	Start-Sleep -Milliseconds 500
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name VisualFXSetting -Type DWord -Value 3
-
-	# Default "best performance" UserPreferencesMask
-	$PerfMask = [byte[]](144, 18, 3, 128, 16, 0, 0, 0)
-	Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name UserPreferencesMask -Value $PerfMask
-
-	# Enable/Check 'Animate controls and elements inside windows'
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects\ControlAnimations' -Name "DefaultApplied" -Type DWord -Value 1
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects\ControlAnimations' -Name "DefaultValue" -Type DWord -Value 1
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects\ControlAnimations' -Name "Value" -Type DWord -Value 1
-
-	# Disable/Uncheck 'Animate windows when minimising and maximising'
-	Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name "MinAnimate" -Type String -Value "0"
-
-	# Disable/Uncheck 'Enable Peek'
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\DWM' -Name "EnableAeroPeek" -Type DWord -Value 0
-
-	# Enable/Check 'Show thumbnails instead of icons'
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name "IconsOnly" -Type DWord -Value 0
-
-	# Enable/Check 'Show translucent selection rectangle'
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name "ListviewAlphaSelect" -Type DWord -Value 1
-
-	# Enable/Check 'Show window contents while dragging'
-	Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name "DragFullWindows" -Type String -Value "1"
-
-	# Enable/Check 'Smooth edges of screen fonts'
-	Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name "FontSmoothing" -Type String -Value "2"
-	Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name "FontSmoothingType" -Type DWord -Value 2
-
-	# Enable/Check 'Use drop shadows for icon labels'
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name "ListviewShadow" -Type DWord -Value 1
-
-	# Disable taskbar animations
-	Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced' -Name "TaskbarAnimations" -Type DWord -Value 0
-
 	# Enable Verbose Status (additional log information when shutting down/restarting Windows) prompt before START
 	if ($verboseS -match '^[Yy]$') {
-		New-Item -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Force | Out-Null
-		Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" -Name "verbosestatus" -Type DWord -Value 1 -Force
-	} else { <# Nothing #> }
+		Set-Reg "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" "verbosestatus" 1
+	}
+
+	# ---- Per-user items: applied to the current user AND the Default profile (new accounts) ----
+	Write-Host "  Applying per-user settings (current user + Default profile for new users)..." -ForegroundColor Cyan
+
+	Invoke-ForUserHives {
+		param($root)
+
+		$explorer = "$root\Software\Microsoft\Windows\CurrentVersion\Explorer"
+		$adv      = "$explorer\Advanced"
+
+		# Basic Explorer tweaks
+		Set-Reg $adv "HideFileExt"          0
+		Set-Reg $adv "Hidden"               1
+		Set-Reg $adv "LaunchTo"             1
+		Set-Reg $adv "NavPaneShowLibraries" 1
+
+		# Classic desktop icons (0 = show)
+		$desktopIcons = @{
+			"{59031a47-3f72-44a7-89c5-5595fe6b30ee}" = 0  # User's Files Folder
+			"{20D04FE0-3AEA-1069-A2D8-08002B30309D}" = 0  # This PC/Computer
+			"{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}" = 0  # Network
+			"{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}" = 0  # Control Panel
+			"{645FF040-5081-101B-9F08-00AA002F954E}" = 0  # Recycle Bin
+		}
+		foreach ($iconGuid in $desktopIcons.Keys) {
+			Set-Reg "$explorer\HideDesktopIcons\NewStartPanel" $iconGuid $desktopIcons[$iconGuid]
+		}
+
+		# Desktop icon size: 32 = Small, 48 = Medium, 96 = Large
+		Set-Reg "$root\Software\Microsoft\Windows\Shell\Bags\1\Desktop" "IconSize" 32
+
+		# Show Windows build at the bottom right of the desktop (prompt before START)
+		if ($winBuildDesktop -match '^[Yy]$') {
+			Set-Reg "$root\Control Panel\Desktop" "PaintDesktopVersion" 1
+		}
+
+		# Disable Spotlight
+		$cdmPath = "$root\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager"
+		Set-Reg $cdmPath "SubscribedContent-338388Enabled" 0   # Desktop Spotlight off
+		Set-Reg $cdmPath "SubscribedContent-338387Enabled" 0   # Lock bleed-over off
+		Set-Reg $cdmPath "RotatingLockScreenEnabled"       0
+		Set-Reg "$root\Software\Microsoft\Windows\CurrentVersion\DesktopSpotlight\Settings" "EnabledState" 0
+
+		# Default Windows wallpaper (light/dark depending on the theme of THIS hive; no value = light)
+		$light = (Get-ItemProperty -Path "$root\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name "AppsUseLightTheme" -ErrorAction SilentlyContinue).AppsUseLightTheme
+		if ($null -eq $light) { $light = 1 }
+
+		if ([int]$osInfo.CurrentBuildNumber -ge 22000) {
+			# Windows 11 default
+			if ($light -eq 1) { $wallpaperPath = "C:\Windows\Web\Wallpaper\Windows\img0.jpg" }
+			else              { $wallpaperPath = "C:\Windows\Web\Wallpaper\Windows\img19.jpg" }
+		} else {
+			# Windows 10 default
+			$wallpaperPath = "C:\Windows\Web\4K\Wallpaper\Windows\img0_3840x2160.jpg"
+		}
+		# Wallpaper Mode set to Image
+		Set-Reg "$explorer\Wallpapers" "BackgroundType" 0
+		Set-Reg "$root\Control Panel\Desktop" "WallPaper" $wallpaperPath "String"
+
+		# Taskbar search display set to icon (Windows 10 / Windows 11)
+		Set-Reg "$root\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 1
+		Set-Reg $adv "TaskbarSearchMode" 1
+
+		# Enable "End task" in app right-click menu taskbar (Only on Windows 11)
+		Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
+
+		# Taskbar start button, pinned and opened Apps, search field bar set alignment to the left (Only on Windows 11)
+		Set-Reg $adv "TaskbarAl" 0
+
+		# Performance options: preset "Best Performance" -> "Custom"
+		Set-Reg "$explorer\VisualEffects" "VisualFXSetting" 2
+		Start-Sleep -Milliseconds 500
+		Set-Reg "$explorer\VisualEffects" "VisualFXSetting" 3
+
+		# Default "best performance" UserPreferencesMask
+		Set-Reg "$root\Control Panel\Desktop" "UserPreferencesMask" ([byte[]](144, 18, 3, 128, 16, 0, 0, 0)) "Binary"
+
+		# Enable/Check 'Animate controls and elements inside windows'
+		Set-Reg "$explorer\VisualEffects\ControlAnimations" "DefaultApplied" 1
+		Set-Reg "$explorer\VisualEffects\ControlAnimations" "DefaultValue"   1
+		Set-Reg "$explorer\VisualEffects\ControlAnimations" "Value"          1
+
+		# Disable/Uncheck 'Animate windows when minimising and maximising'
+		Set-Reg "$root\Control Panel\Desktop\WindowMetrics" "MinAnimate" "0" "String"
+
+		# Disable/Uncheck 'Enable Peek'
+		Set-Reg "$root\Software\Microsoft\Windows\DWM" "EnableAeroPeek" 0
+
+		# Enable/Check 'Show thumbnails instead of icons'
+		Set-Reg $adv "IconsOnly" 0
+
+		# Enable/Check 'Show translucent selection rectangle'
+		Set-Reg $adv "ListviewAlphaSelect" 1
+
+		# Enable/Check 'Show window contents while dragging'
+		Set-Reg "$root\Control Panel\Desktop" "DragFullWindows" "1" "String"
+
+		# Enable/Check 'Smooth edges of screen fonts'
+		Set-Reg "$root\Control Panel\Desktop" "FontSmoothing"     "2" "String"
+		Set-Reg "$root\Control Panel\Desktop" "FontSmoothingType" 2
+
+		# Enable/Check 'Use drop shadows for icon labels'
+		Set-Reg $adv "ListviewShadow" 1
+
+		# Disable taskbar animations
+		Set-Reg $adv "TaskbarAnimations" 0
+	}
 
     # Restart explorer.exe and Desktop to apply changes
 	Write-Host "  Restarting Explorer and Desktop..." -ForegroundColor Cyan
@@ -624,13 +707,18 @@ if ($tweakGeneralExplorerAndOther) {
 # ========================
 if ($disableTelemetry) {
     Write-Host "Disabling Microsoft Telemetry & Cortana..." -ForegroundColor White -BackgroundColor Blue
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Force | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" -Name AllowTelemetry -Value 0 -Type DWord
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" -Name Enabled -Value 0
-    New-Item -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Force | Out-Null
-    Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" -Name "AllowCortana" -Value 0 -Type DWord
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "BingSearchEnabled" -Value 0
-    Set-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Search" -Name "CortanaConsent" -Value 0
+
+    # Machine-wide
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection" "AllowTelemetry" 0
+    Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search" "AllowCortana" 0
+
+    # Per-user (current user + Default profile)
+    Invoke-ForUserHives {
+        param($root)
+        Set-Reg "$root\Software\Microsoft\Windows\CurrentVersion\AdvertisingInfo" "Enabled" 0
+        Set-Reg "$root\Software\Microsoft\Windows\CurrentVersion\Search" "BingSearchEnabled" 0
+        Set-Reg "$root\Software\Microsoft\Windows\CurrentVersion\Search" "CortanaConsent"    0
+    }
 	Write-Host "  Microsoft Telemtry & Cortana disabled." -ForegroundColor Cyan
 }
 
@@ -640,8 +728,7 @@ if ($disableTelemetry) {
 if ($manageServices) {
     Write-Host "Optimizing services..." -ForegroundColor White -BackgroundColor Blue
 
-	$logDir = "$env:ProgramData\FariaSetup"
-	New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+	# Snapshot BEFORE, so you can see exactly what this script changed (diff command is in the notes)
 	Get-Service | Select-Object Name, DisplayName, Status, StartType |
 		Export-Csv "$logDir\services-before.csv" -NoTypeInformation
 
@@ -659,7 +746,9 @@ if ($manageServices) {
 	$autoServices    = @("Spooler","W32Time","WlanSvc","LanmanWorkstation","LanmanServer")
 	$manualServices  = @("SysMain","TrkWks","DoSvc","WerSvc","Fax","XblAuthManager","XblGameSave","XboxGipSvc","XboxNetApiSvc")
 	$disableServices = @("DiagTrack","RemoteRegistry","RetailDemo","MapsBroker","PhoneSvc",
-						 "WalletService","WpcMonSvc","WMPNetworkSvc","SharedAccess")
+						 "WalletService","WpcMonSvc","WMPNetworkSvc",
+						 "SharedAccess")   # SharedAccess = Internet Connection Sharing, breaks Mobile Hotspot
+	# dmwappushservice is intentionally NOT disabled: Intune/MDM uses it.
 
 	foreach ($s in $autoServices)    { Set-SvcStartup $s "Automatic" }
 	foreach ($s in $manualServices)  { Set-SvcStartup $s "Manual" }
@@ -676,6 +765,14 @@ if ($manageServices) {
 # ========================
 if ($forceDisableBitlocker) {
 	Write-Host "[Status]: Disabling BitLocker..." -ForegroundColor White -BackgroundColor Blue
+
+	# --- PREVENTION ---
+	# Stops Windows from automatically starting Device Encryption / BitLocker (some laptops do it at first sign-in).
+	# Set before first sign-in (e.g. in audit mode) this keeps the drive unencrypted.
+	Write-Host "  Blocking automatic device encryption..." -ForegroundColor Cyan
+	Set-Reg "HKLM:\SYSTEM\CurrentControlSet\Control\BitLocker" "PreventDeviceEncryption" 1
+
+	# --- FORCE DISABLE (decrypt anything that is already encrypted) ---
 	try {
         $volumes = Get-BitLockerVolume
         $needsAction = $false
@@ -705,31 +802,36 @@ if ($forceDisableBitlocker) {
         } else {
             # Wait for decryption to complete
             Write-Host "Decrypting drive...  " -ForegroundColor Black -BackgroundColor Yellow
+            Start-Sleep -Seconds 5   # give Windows a moment to switch the status to DecryptionInProgress
             do {
-                Start-Sleep -Seconds 30
-                $stillWorking = Get-BitLockerVolume | Where-Object { $_.VolumeStatus -eq "DecryptionInProgress" -or $_.VolumeStatus -eq "FullyEncrypted" }
+                $stillWorking = Get-BitLockerVolume | Where-Object { $_.VolumeStatus -eq "DecryptionInProgress" }
                 if ($stillWorking) {
                     $percent = $stillWorking[0].EncryptionPercentage
-                    Write-Host "Progress: $percent% remaining on $($stillWorking[0].MountPoint)  " -ForegroundColor Black -BackgroundColor Yellow
+                    Write-Host "Progress: $percent% still encrypted on $($stillWorking[0].MountPoint)  " -ForegroundColor Black -BackgroundColor Yellow
+                    Start-Sleep -Seconds 30
                 }
             } while ($stillWorking)
 
-            Write-Host "  Decryption completed on all drives." -ForegroundColor Cyan
+            # Anything still fully encrypted at this point means decryption never started
+            $stuck = Get-BitLockerVolume | Where-Object { $_.VolumeStatus -eq "FullyEncrypted" }
+            if ($stuck) {
+                Write-Warning "Decryption did not start on: $(($stuck | ForEach-Object { $_.MountPoint }) -join ', ')"
+            } else {
+                Write-Host "  Decryption completed on all drives." -ForegroundColor Cyan
+            }
         }
 
+        # NOTE: this also stops scheduled SSD optimization (TRIM). Remove these two lines if you want it to keep running.
         Set-Service -Name "defragsvc" -StartupType Disabled -ErrorAction Continue
         Stop-Service -Name "defragsvc" -Force -ErrorAction Continue
 
         Write-Host "  BitLocker fully disabled." -ForegroundColor Cyan
 
         manage-bde -status
-    }
-    catch {
-        Write-Error "Error: $_"
-    }
+    } catch { Write-Error "Error: $_" }
 }
 
-# ?? ASK USER INSTALL APPS prompt before START
+# ASK USER INSTALL APPS prompt before START
 # ========================
 #  INSTALL ESSENTIAL APPS
 # ========================
@@ -799,12 +901,16 @@ if ($installapps) {
     }
 }
 
+
 # ========================
 #  END
 # ========================
 Write-Host "`n"
 Write-Host "Script completed! Windows needs to restart for all applied settings changes to have full effect!" -ForegroundColor White -BackgroundColor Green
+Write-Host "Log files: $logDir" -ForegroundColor Green
 $restart = Read-Host "Restart your PC now? (Y/N): "
+
+try { Stop-Transcript | Out-Null } catch { }
 
 if ($restart -match '^[Yy]$') {
     Write-Host "Restarting your PC..." -ForegroundColor Green
