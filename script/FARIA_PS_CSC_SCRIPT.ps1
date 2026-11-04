@@ -213,7 +213,8 @@ if ($removeApps) {
         "Microsoft.MixedReality.Portal",
         "microsoft.windowscommunicationsapps",
 		"Microsoft.OutlookForWindows",
-		"Clipchamp.Clipchamp"
+		"Clipchamp.Clipchamp",
+		"MicrosoftWindows.Client.WebExperience"
     )
 
     foreach ($app in $apps) {
@@ -640,6 +641,7 @@ if ($tweakGeneralExplorerAndOther) {
 		# Taskbar search display set to icon (Windows 10 / Windows 11)
 		Set-Reg "$root\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 1
 		Set-Reg $adv "TaskbarSearchMode" 1
+		Set-Reg $adv "Start_IrisRecommendations" 0
 		
 		# Widgets off: board, taskbar button and lock screen (Windows 11)
 		$dsh = "HKLM:\SOFTWARE\Policies\Microsoft\Dsh"
@@ -650,12 +652,11 @@ if ($tweakGeneralExplorerAndOther) {
 		# Task View button off for all users (Windows 11 build 22610+)
 		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideTaskViewButton" 1
 
-		# Settings + Personal folder buttons next to the power button
-		$startPol = "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start"
-		foreach ($f in @("AllowPinnedFolderSettings", "AllowPinnedFolderPersonalFolder")) {
-			Set-Reg $startPol $f 1
-			Set-Reg $startPol "${f}_ProviderSet" 1
-		}
+		# Settings + Personal folder next to the power button
+		$places = @("{52730886-51AA-4243-9F7B-2776584659D4}", "{74BDB04A-F94A-4F68-8BD6-4398071DA8BC}")
+		$bytes = foreach ($g in $places) { [Guid]::new($g).ToByteArray() }
+		Set-Reg $start "VisiblePlaces" ([byte[]]$bytes) "Binary"
+		Set-Reg $start "PlacesInitializedVersion" 2
 		
 		$start = "$root\Software\Microsoft\Windows\CurrentVersion\Start"
 		Set-Reg $start "ShowRecentSection"  0   # 26H2: the Recent section (formerly Recommended)
