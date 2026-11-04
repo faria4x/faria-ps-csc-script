@@ -640,6 +640,12 @@ if ($tweakGeneralExplorerAndOther) {
 		# Taskbar search display set to icon (Windows 10 / Windows 11)
 		Set-Reg "$root\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 1
 		Set-Reg $adv "TaskbarSearchMode" 1
+		
+		# Widgets / News off on Windows 11 and Windows 10
+		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0              # Windows 11 Widgets
+		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0      # Windows 10 News and Interests
+		
+		Set-Reg "$root\Software\Microsoft\Windows\CurrentVersion\Feeds" "ShellFeedsTaskbarViewMode" 2   # Windows 10 taskbar feed off
 
 		# Enable "End task" in app right-click menu taskbar (Only on Windows 11)
 		Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
