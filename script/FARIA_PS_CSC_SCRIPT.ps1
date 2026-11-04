@@ -641,11 +641,27 @@ if ($tweakGeneralExplorerAndOther) {
 		Set-Reg "$root\SOFTWARE\Microsoft\Windows\CurrentVersion\Search" "SearchboxTaskbarMode" 1
 		Set-Reg $adv "TaskbarSearchMode" 1
 		
-		# Widgets / News off on Windows 11 and Windows 10
-		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Dsh" "AllowNewsAndInterests" 0              # Windows 11 Widgets
-		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Feeds" "EnableFeeds" 0      # Windows 10 News and Interests
+		# Widgets off: board, taskbar button and lock screen (Windows 11)
+		$dsh = "HKLM:\SOFTWARE\Policies\Microsoft\Dsh"
+		Set-Reg $dsh "AllowNewsAndInterests"    0
+		Set-Reg $dsh "AllowWidgets"             0
+		Set-Reg $dsh "AllowWidgetsOnLockscreen" 0
+
+		# Task View button off for all users (Windows 11 build 22610+)
+		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideTaskViewButton" 1
+
+		# Settings + Personal folder buttons next to the power button
+		$startPol = "HKLM:\SOFTWARE\Microsoft\PolicyManager\current\device\Start"
+		foreach ($f in @("AllowPinnedFolderSettings", "AllowPinnedFolderPersonalFolder")) {
+			Set-Reg $startPol $f 1
+			Set-Reg $startPol "${f}_ProviderSet" 1
+		}
 		
-		Set-Reg "$root\Software\Microsoft\Windows\CurrentVersion\Feeds" "ShellFeedsTaskbarViewMode" 2   # Windows 10 taskbar feed off
+		$start = "$root\Software\Microsoft\Windows\CurrentVersion\Start"
+		Set-Reg $start "ShowRecentSection"  0   # 26H2: the Recent section (formerly Recommended)
+		Set-Reg $start "ShowSuggestedFiles" 0   # recent and suggested files
+		Set-Reg $start "ShowRecentList"     0   # recently added apps
+		Set-Reg $start "StartMenuSize"      1   # 0 = Automatic, 1 = Small, 2 = Large
 
 		# Enable "End task" in app right-click menu taskbar (Only on Windows 11)
 		Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
