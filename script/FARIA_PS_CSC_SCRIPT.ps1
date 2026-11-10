@@ -643,6 +643,9 @@ if ($tweakGeneralExplorerAndOther) {
 		Set-Reg $adv "TaskbarSearchMode" 1
 		Set-Reg $adv "Start_IrisRecommendations" 0
 		
+		# Task View button off (per-user, so no "managed by your organisation" notice)
+		Set-Reg $adv "ShowTaskViewButton" 0
+		
 		# Widgets off: board, taskbar button and lock screen (Windows 11)
 		$dsh = "HKLM:\SOFTWARE\Policies\Microsoft\Dsh"
 		Set-Reg $dsh "AllowNewsAndInterests"    0
@@ -652,17 +655,19 @@ if ($tweakGeneralExplorerAndOther) {
 		# Task View button off for all users (Windows 11 build 22610+)
 		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideTaskViewButton" 1
 
+		$start = "$root\Software\Microsoft\Windows\CurrentVersion\Start"
+
 		# Settings+UserFolder near power button in start
 		$visible = [byte[]](134,8,115,82,170,81,67,66,159,123,39,118,88,70,89,212,
                     74,176,189,116,74,249,104,79,139,214,67,152,7,29,168,188)
 		Set-Reg $start "VisiblePlaces" $visible "Binary"
 		Set-Reg $start "PlacesInitializedVersion" 2
-		
-		$start = "$root\Software\Microsoft\Windows\CurrentVersion\Start"
+
 		Set-Reg $start "ShowRecentSection"  0   # 26H2: the Recent section (formerly Recommended)
 		Set-Reg $start "ShowSuggestedFiles" 0   # recent and suggested files
 		Set-Reg $start "ShowRecentList"     0   # recently added apps
 		Set-Reg $start "StartMenuSize"      1   # 0 = Automatic, 1 = Small, 2 = Large
+		Set-Reg $start "Start_IrisRecommendations" 0
 
 		# Enable "End task" in app right-click menu taskbar (Only on Windows 11)
 		Set-Reg "$adv\TaskbarDeveloperSettings" "TaskbarEndTask" 1
