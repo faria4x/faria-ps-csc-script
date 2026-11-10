@@ -652,10 +652,10 @@ if ($tweakGeneralExplorerAndOther) {
 		# Task View button off for all users (Windows 11 build 22610+)
 		Set-Reg "HKLM:\SOFTWARE\Policies\Microsoft\Windows\Explorer" "HideTaskViewButton" 1
 
-		# Settings + Personal folder next to the power button
-		$places = @("{52730886-51AA-4243-9F7B-2776584659D4}", "{74BDB04A-F94A-4F68-8BD6-4398071DA8BC}")
-		$bytes = foreach ($g in $places) { [Guid]::new($g).ToByteArray() }
-		Set-Reg $start "VisiblePlaces" ([byte[]]$bytes) "Binary"
+		# Settings+UserFolder near power button in start
+		$visible = [byte[]](134,8,115,82,170,81,67,66,159,123,39,118,88,70,89,212,
+                    74,176,189,116,74,249,104,79,139,214,67,152,7,29,168,188)
+		Set-Reg $start "VisiblePlaces" $visible "Binary"
 		Set-Reg $start "PlacesInitializedVersion" 2
 		
 		$start = "$root\Software\Microsoft\Windows\CurrentVersion\Start"
